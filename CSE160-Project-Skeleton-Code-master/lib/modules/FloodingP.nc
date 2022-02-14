@@ -7,26 +7,28 @@
 
 module FloodingP{
     provides interface Flooding;
+    uses interface SimpleSend as Flooder;
     uses interface SimpleSend as Sender;
+    
+    uses interface Receive as MReceiver;
     uses interface Receive as Receiver;
     uses interface List<pack> as Records;
-    uses interface Discovery;
 }
 
 implementation {
     pack sendPackage;
     void makePackage(pack *Package, uint16_t src, uint16_t dest, uint16_t TTL, uint16_t protocol, uint16_t seq, uint8_t *payload, uint8_t length);
-    void addtoQueue(pack *package);
-    bool packageHistory(pack* package);
+    void addtoQueue(pack *Package);
+    bool packageHistory(pack* Package);
     uint16_t nodeSeq = 0;
 
-    command error_t Flooding.send(pack *package, uint16_t dest){
+    command error_t Flooder.send(pack *Package, uint16_t dest){
         dbg(FLOODING_CHANNEL, "Sending from Flood\n");
-        package.src = TOS_NODE_ID;
-        package.protocol = PROT_PING;
-        package.seq = nodeSeq++;
-        package.TTL = MAX_TTL;
-        call Recieve.send(package, AM_BROADCAST_ADDR);
+        Package.src = TOS_NODE_ID;
+        Package.seq = nodeSeq++;
+        Package.TTL = MAX_TTL;
+        addtoQueue(Package);
+        call Sender.send(*Package, AM_BROADCAST_ADDR);
     }
 
     event message_t *Receiver.receive(message_t * msg, void *payload, uint8_t len){
@@ -40,32 +42,41 @@ implementation {
             }
             else if(TOS_NODE_ID == contents -> dest){       //Check if reached destination
                 dbg(FLOODING_CHANNEL, "Reached Destination %d from %d.\n", contents -> dest, contents -> src);
-                if(contents -> protocal == PROT_PING){      //Sending Reply
+                if(contents -> protocol == PROTOCOL_PING){      //Sending Reply
                     dbg(FLOODING_CHANNEL, "%d replying to %d \n", contents -> dest, contents ->src);
-
+                    //Update Package
+                    uint16_t temp = contents -> src;
+                    contents -> src = contents -> dest;
+                    contents -> dest = temp;
+                    contents -> protocol = PROTOCOL_PINGREPLY;
                     addtoQueue(contents);       //Make sure it can run, add to records
-
                     //send package back
-
-
+                    call Flooder.send(*contents, contents -> dest);
+                    return signal MReceiver.receive(msg, payload, len);
+                }
+                else if(contents -> protocol == PROTOCOL_PINGREPLY){ //Just a reply good to remove now
+                    dbg(FLOODING_CHANNEL, "%d got reply from %d for message \n", contents -> dest, contents ->src);
+                    return msg;
                 }
             }
-            else if (contents -> TTL == 0){         //Ran out of time
-                dbg(FLOODING_CHANNEL, "TTL: %d\n", contents-> TTL);
-                return msg;
-            }
-            else if(TOS_NODE_ID != contents -> dest){
+            else{   //Decrement TTL and continue
+                contents -> TTL--;
 
-                //Continue Flood
-                //relay to Discovery
+                if (contents -> TTL == 0){         //Ran out of time
+                    dbg(FLOODING_CHANNEL, "TTL: %d\n", contents-> TTL);
+                    return msg;
+                }
 
+                call Sender.send(*contents, AM_BROADCAST_ADDR);
             }
+            dbg(FLOODING_CHANNEL, "Something went wrong \n");
             return msg;
         }
     }
 
 
     void makePackage(pack *Package, uint16_t src, uint16_t dest, uint16_t TTL, uint16_t protocol, uint16_t seq, uint8_t *payload, uint8_t length){      //Setup a package
+        //Package -> origin = src;      might use this don't know yet
         Package -> dest = dest;
         Package -> src = src;
         Package -> seq = seq;
@@ -75,21 +86,21 @@ implementation {
         dbg(GENERAL_CHANNEL, "Made Package: \n      Src: %hhu Dest: %hhu Seq: %hhu TTL: %hhu Protocol:%hhu  Payload: %s\n", src, dest, seq, TTL, protocol, payload);
     }
 
-    bool packageHistory(pack* package){     //Checks duplicates
+    bool packageHistory(pack* Package){     //Checks duplicates
         uint16_t i;
         for(i = 0; i < call Records.size(); i++){
             pack comparison = call Records.get(i);
-            if((package -> dest == comparison.dest) && (package -> src == comparison.src) && (package -> seq == comparison.seq) && (package -> protocol == comparison.protocol)){
+            if((Package -> dest == comparison.dest) && (Package -> src == comparison.src) && (Package -> seq == comparison.seq) && (Package -> protocol == comparison.protocol)){
                 return TRUE;
             }
         }
         return FALSE;
     }
 
-    void addtoQueue(pack *package){
-        if(call Records.isFull()){          //check if record queue is full if it is make room using List
-            call Records.popfront();
+    void addtoQueue(pack *Package){
+        if(call Records.isFull()){          //check if record queue is full if it is make room using List takes out first packet to be used. 
+            call Records.popfront();        
         }
-        call Records.pushback(*package);    //Adding Packet to Records using List
+        call Records.pushback(*Package);    //Adding Packet to Records using List
     }
 }
