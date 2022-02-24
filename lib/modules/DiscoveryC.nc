@@ -1,15 +1,22 @@
+#define AM_NEIGHBOR 62
 
-
-configuration DiscoveryC{
-// Use SimpleSendC & SimpleSendP for basic tasks for sending packets
-}
-configuration CommandHandlerC{
-    provides interface CommandHandler;
+configuration NDiscoveryC{
+  provides interface NDiscovery;
 }
 
 implementation{
-    components DiscoveryP;
-    Discovery = DiscoveryP;
-   // Discovery = DiscoveryP.Discovery;
-   
+    components NDiscoveryP;
+    components new SimpleSendC(AM_NEIGHBOR);
+    components new AMReceiverC(AM_NEIGHBOR);
+
+    NDiscoveryP.neighborList = neighborListC;
+
+
+    // External Wiring
+    NDiscovery = NDiscoveryP.NDiscovery;
+
+    components new TimerMilliC() as myTimerC; //create a new timer with alias “myTimerC”
+    NDiscoveryP.neigbordiscoveryTimer -> myTimerC; //Wire the interface to the component
+    NDiscoveryP.FloodSender -> FloodingC.FloodSender;
+
 }

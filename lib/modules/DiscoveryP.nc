@@ -1,89 +1,100 @@
-
-#include <Timer.h>
-#include "../../includes/command.h"
-#include "../../includes/packet.h"
-#include "../../includes/CommandMsg.h"
-#include "../../includes/sendInfo.h"
 #include "../../includes/channels.h"
+#include "../../includes/packet.h"
 
-module NeighborDiscoveryP
-{
+#define BEACON_PERIOD 1000
 
-    //Provides the SimpleSend interface in order to neighbor discover packets
+module NeighborDiscoveryP{
     provides interface NeighborDiscovery;
-    //Uses SimpleSend interface to forward recieved packet as broadcast
-    uses interface SimpleSend as Sender;
-    //Uses the Receive interface to determine if received packet is meant for me.
-	uses interface Receive as Receiver;
 
-    uses interface Packet;
-    uses interface AMPacket;
-	//Uses the Queue interface to determine if packet recieved has been seen before
-	uses interface List<neighbor> as Neighborhood;
-    uses interface Timer<TMilli> as periodicTimer;
-
-    // Anything in module will be placed in components 
-   
+    uses interface Timer<TMilli> as neigbordiscoveryTimer;
+    uses interface SimpleSend as FloodSender;
+    uses interface List<pack> as neighborList;
+    uses interface Random as Random;
 }
 
+implementation{
+    pack sendPackage;
+    uint16_t seqNumber = 0;
+    uint16_t neighborAge = 0;
+    bool findMyNeighbor(pack *Package);
+    void removeNeighbors();
 
-implementation
-{
-    
-    pack sendPackage; 
-    neighbor neighborHolder;
-    uint16_t SEQ_NUM=200;
-    uint8_t * temp = &SEQ_NUM;
+    void makePack(pack *Package, uint16_t src, uint16_t dest, uint16_t TTL, uint16_t Protocol, uint16_t seq, uint8_t *payload, uint8_t length);
 
-    void makePack(pack * Package, uint16_t src, uint16_t dest, uint16_t TTL, uint16_t seq, uint16_t protocol, uint8_t * payload, uint8_t length);
-
-	bool isNeighbor(uint8_t nodeid);
-    error_t addNeighbor(uint8_t nodeid);
-    void updateNeighbors();
-    void printNeighborhood();
-
-    uint8_t neighbors[19]; //Maximum of 20 neighbors?
-
- 
-    command void NeighborDiscovery.run()
-	{
-        makePack(&sendPackage, TOS_NODE_ID, AM_BROADCAST_ADDR, 1, SEQ_NUM , PROTOCOL_PING, temp , PACKET_MAX_PAYLOAD_SIZE);
-        SEQ_NUM++;
-        call Sender.send(sendPackage, AM_BROADCAST_ADDR);
-        
-        call periodicTimer.startPeriodic(100000);
-	}
-
-    event void periodicTimer.fired()
-    {
-        dbg(NEIGHBOR_CHANNEL, "Sending from NeighborDiscovery\n");
-        updateNeighbors();
-
-
-
-
-        //optional - call a funsion to organize the list
-        makePack(&sendPackage, TOS_NODE_ID, AM_BROADCAST_ADDR, 1, SEQ_NUM , PROTOCOL_PING, temp , PACKET_MAX_PAYLOAD_SIZE);
-		call Sender.send(sendPackage, AM_BROADCAST_ADDR);
+    command void NeighborDiscovery.start(){
+        // one shot timer and include random element to it.
+        uint32_t startTimer;
+        dbg(GENERAL_CHANNEL, "Booted\n");
+        startTimer = (20000 + (uint16_t) ((call Random.rand16())%5000));;
+        //call neigbordiscoveryTimer.startPeriodic(startTimer);
+        call neigbordiscoveryTimer.startOneShot(10000);
     }
 
-	command void NeighborDiscovery.print() {
-		printNeighborhood();
-	}
+    command void NeighborDiscovery.neighborReceived(pack *myMsg){
+        if(!findMyNeighbor(myMsg)){
+            call neighborList.pushback(*myMsg);
+        }
+    }
 
-    event message_t *Receiver.receive(message_t * msg, void *payload, uint8_t len)
-    {
-        if (len == sizeof(pack)) //check if there's an actual packet
-        {
-            pack *contents = (pack*) payload;
-           dbg(NEIGHBOR_CHANNEL, "NeighborReciver Called \n");
+    command void NeighborDiscovery.print(){
+        if(call neighborList.size() > 0){
+            uint16_t neighborListSize = call neighborList.size();
+            uint16_t i = 0;
+            //dbg(NEIGHBOR_CHANNEL, "***the NEIGHBOUR size of node %d is :%d\n",TOS_NODE_ID, neighborListSize);
+            for(i = 0; i < neighborListSize; i++){
+                pack neighborNode = call neighborList.get(i);
+                dbg(NEIGHBOR_CHANNEL, "***the NEIGHBOURS  of node  %d is :%d\n",TOS_NODE_ID,neighborNode.src);
+            }
+        }
+        else{
+            dbg(COMMAND_CHANNEL, "***0 NEIGHBOURS  of node  %d!\n",TOS_NODE_ID);
+        }
+    }
 
-            if (PROTOCOL_PING == contents-> protocol) //got a message, not a reply
-            {
-                if (contents->TTL == 1)
-                {
-                 .
-                 .
-                 .
+    event void neigbordiscoveryTimer.fired(){
+        char* neighborPayload = "Neighbor Discovery";
+        uint16_t size = call neighborList.size();
+        uint16_t i = 0;
+        if(neighborAge==MAX_NEIGHBOR_AGE){
+            //dbg(NEIGHBOR_CHANNEL,"removing neighbor of %d with Age %d \n",TOS_NODE_ID,neighborAge);
+            neighborAge = 0;
+            for(i = 0; i < size; i++) {
+                call neighborList.popfront();
+            }
+        }
+        makePack(&sendPackage, TOS_NODE_ID, AM_BROADCAST_ADDR, 2, PROTOCOL_PING, seqNumber,  (uint8_t*) neighborPayload, PACKET_MAX_PAYLOAD_SIZE);
+        neighborAge++;
+        //Check TOS_NODE_ID and destination
+        call FloodSender.send(sendPackage, AM_BROADCAST_ADDR);
+    }
 
-                 // to be continued by you ...
+    void removeNeighbors(){
+        uint16_t size = call neighborList.size();
+        uint16_t i = 0;
+        for(i = 0; i < size; i++) {
+            call neighborList.popback();
+        }
+    }
+
+    bool findMyNeighbor(pack *Package){
+        uint16_t size = call neighborList.size();
+        uint16_t i = 0;
+        pack checkIfExists;
+        for(i = 0; i < size; i++) {
+            checkIfExists = call neighborList.get(i);
+            if(checkIfExists.src == Package->src && checkIfExists.dest == Package->dest) {
+                return TRUE;
+            }
+        }
+        return FALSE;
+    }
+
+    void makePack(pack *Package, uint16_t src, uint16_t dest, uint16_t TTL, uint16_t protocol, uint16_t seq, uint8_t* payload, uint8_t length){
+        Package->src = src;
+        Package->dest = dest;
+        Package->TTL = TTL;
+        Package->seq = seq;
+        Package->protocol = protocol;
+        memcpy(Package->payload, payload, length);
+    }
+}
